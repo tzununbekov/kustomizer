@@ -1,0 +1,9 @@
+apiVersion: serving.knative.dev/v1alpha1
+kind: Service
+metadata:
+  name: kustomizer
+spec:
+  template:
+    spec:
+      containers:
+      - image: github.com/tzununbekov/kustomizer
