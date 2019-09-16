@@ -1,4 +1,4 @@
-module github.com/triggermesh/kustomization
+module github.com/tzununbekov/kustomizer
 
 go 1.13
 
