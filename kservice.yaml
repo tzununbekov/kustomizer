@@ -7,3 +7,6 @@ spec:
     spec:
       containers:
       - image: github.com/tzununbekov/kustomizer
+        env:
+        - name: K_REPO
+          value: https://github.com/tzununbekov/ktest

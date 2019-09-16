@@ -4,41 +4,39 @@ import (
 	"context"
 	"fmt"
 	"log"
+	"os"
+	"time"
 
+	"github.com/caarlos0/env"
 	cloudevents "github.com/cloudevents/sdk-go"
+	"github.com/otiai10/copy"
 	"gopkg.in/src-d/go-git.v4"
 	"gopkg.in/src-d/go-git.v4/plumbing"
+	"gopkg.in/src-d/go-git.v4/plumbing/object"
 	"knative.dev/eventing-contrib/pkg/kncloudevents"
+	"sigs.k8s.io/kustomize/k8sdeps/kunstruct"
+	"sigs.k8s.io/kustomize/k8sdeps/transformer"
+	"sigs.k8s.io/kustomize/pkg/commands/build"
+	"sigs.k8s.io/kustomize/pkg/fs"
+	"sigs.k8s.io/kustomize/pkg/resmap"
+	"sigs.k8s.io/kustomize/pkg/resource"
 )
 
-/*
-Example Output:
+const (
+	basePath = "/home"
+)
 
-☁  cloudevents.Event:
-Validation: valid
-Context Attributes,
-  SpecVersion: 0.2
-  Type: dev.knative.eventing.samples.heartbeat
-  Source: https://knative.dev/eventing-contrib/cmd/heartbeats/#local/demo
-  ID: 3d2b5a1f-10ca-437b-a374-9c49e43c02fb
-  Time: 2019-03-14T21:21:29.366002Z
-  ContentType: application/json
-  Extensions:
-    the: 42
-    beats: true
-    heart: yes
-Transport Context,
-  URI: /
-  Host: localhost:8080
-  Method: POST
-Data,
-  {
-    "id":162,
-    "label":""
-  }
-*/
+type config struct {
+	KustomizeRepo string `env:"K_REPO"`
+}
+
+var cfg config
 
 func main() {
+	if err := env.Parse(&cfg); err != nil {
+		log.Fatal("env parsing failed: ", err)
+	}
+
 	c, err := kncloudevents.NewDefaultClient()
 	if err != nil {
 		log.Fatal("Failed to create client, ", err)
@@ -54,22 +52,73 @@ func handler(ctx context.Context, event cloudevents.Event) error {
 	// Apply kustomization
 	// Push result back to kustomization repository
 
-	meta := event.Extensions()
-	owner, exist := meta["owner"]
-	if !exist {
-		return fmt.Errorf("Owner field is not send in event")
+	repoPath, err := checkoutTargetRepository(event)
+	if err != nil {
+		return err
 	}
-	repository, exist := meta["repository"]
-	if !exist {
-		return fmt.Errorf("Repository field is not send in event")
+	kustomizationPath := fmt.Sprintf("%s-kustomize", repoPath)
+	if err := checkoutKustomizationRepository(cfg.KustomizeRepo, kustomizationPath); err != nil {
+		return err
 	}
-	cloneURL, exist := meta["clone_url"]
-	if !exist {
-		return fmt.Errorf("Clone URL field is not send in event")
-	}
-	home := fmt.Sprintf("/tmp/%s/%s", owner, repository)
 
-	return clone(fmt.Sprintf("%s", cloneURL), home)
+	tmpPath := fmt.Sprintf("%s-tmp", repoPath)
+
+	if err := copy.Copy(kustomizationPath, tmpPath); err != nil {
+		return err
+	}
+
+	if err := copy.Copy(repoPath, tmpPath); err != nil {
+		return err
+	}
+
+	opt := build.NewOptions(tmpPath, fmt.Sprintf("%s/output.yaml", kustomizationPath))
+
+	uf := kunstruct.NewKunstructuredFactoryImpl()
+	pf := transformer.NewFactoryImpl()
+	rf := resmap.NewFactory(resource.NewFactory(uf))
+
+	if err := opt.RunBuild(os.Stdout, fs.MakeRealFS(), rf, pf); err != nil {
+		return err
+	}
+
+	// dat, err := ioutil.ReadFile(fmt.Sprintf("%s/output.yaml", kustomizationPath))
+	// if err != nil {
+	// return err
+	// }
+	// fmt.Println(string(dat))
+	// return nil
+
+	return push(kustomizationPath)
+}
+
+func checkoutTargetRepository(event cloudevents.Event) (string, error) {
+	meta := event.Extensions()
+	owner, exist := meta["Owner"]
+	if !exist {
+		return "", fmt.Errorf("Owner field is not send in event")
+	}
+	repository, exist := meta["Repository"]
+	if !exist {
+		return "", fmt.Errorf("Repository field is not send in event")
+	}
+	cloneURL, exist := meta["Clone_url"]
+	if !exist {
+		return "", fmt.Errorf("Clone URL field is not send in event")
+	}
+	home := fmt.Sprintf("/%s/%s/%s", basePath, owner, repository)
+
+	if err := clone(fmt.Sprintf("%s", cloneURL), home); err != nil {
+		return "", err
+	}
+	release := false
+	if event.Type() == "release" {
+		release = true
+	}
+	return home, checkout(home, event.ID(), release)
+}
+
+func checkoutKustomizationRepository(url, path string) error {
+	return clone(url, path)
 }
 
 func clone(url, directory string) error {
@@ -91,7 +140,7 @@ func checkout(directory, id string, isTag bool) error {
 		return err
 	}
 
-	if err := w.Pull(&git.PullOptions{RemoteName: "origin"}); err != nil {
+	if err := w.Pull(&git.PullOptions{RemoteName: "origin"}); err != nil && err != git.NoErrAlreadyUpToDate {
 		return err
 	}
 
@@ -115,4 +164,40 @@ func checkout(directory, id string, isTag bool) error {
 	return w.Checkout(&git.CheckoutOptions{
 		Hash: plumbing.NewHash(id),
 	})
+}
+
+func push(path string) error {
+	r, err := git.PlainOpen(path)
+	if err != nil {
+		return err
+	}
+
+	w, err := r.Worktree()
+	if err != nil {
+		return err
+	}
+
+	_, err = w.Add("output.yaml")
+	if err != nil {
+		return err
+	}
+
+	status, err := w.Status()
+	if err != nil {
+		return err
+	}
+
+	fmt.Println(status)
+
+	if _, err := w.Commit("adding output.yaml", &git.CommitOptions{
+		Author: &object.Signature{
+			Name:  "John Doe",
+			Email: "john@doe.org",
+			When:  time.Now(),
+		},
+	}); err != nil {
+		return err
+	}
+
+	return r.Push(&git.PushOptions{})
 }
