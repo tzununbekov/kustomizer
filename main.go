@@ -3,12 +3,16 @@ package main
 import (
 	"context"
 	"fmt"
+	"io"
 	"log"
+	stdhttp "net/http"
 	"os"
+	"strconv"
 	"time"
 
 	"github.com/caarlos0/env"
 	cloudevents "github.com/cloudevents/sdk-go"
+	"github.com/google/go-github/github"
 	"github.com/otiai10/copy"
 	"gopkg.in/src-d/go-git.v4"
 	"gopkg.in/src-d/go-git.v4/plumbing"
@@ -54,10 +58,16 @@ func handler(ctx context.Context, event cloudevents.Event) error {
 	// Apply kustomization
 	// Push result back to kustomization repository
 
-	repoPath, err := checkoutTargetRepository(event)
+	// repoPath, err := checkoutTargetRepository(event)
+	// if err != nil {
+	// 	return err
+	// }
+
+	repoPath, err := downloadReleaseAssets(event)
 	if err != nil {
 		return err
 	}
+
 	kustomizationPath := fmt.Sprintf("%s-kustomize", repoPath)
 	if err := checkoutKustomizationRepository(cfg.KustomizeRepo, kustomizationPath); err != nil {
 		return err
@@ -86,7 +96,33 @@ func handler(ctx context.Context, event cloudevents.Event) error {
 	return push(kustomizationPath)
 }
 
-func checkoutTargetRepository(event cloudevents.Event) (string, error) {
+// func checkoutTargetRepository(event cloudevents.Event) (string, error) {
+// 	meta := event.Extensions()
+// 	owner, exist := meta["Owner"]
+// 	if !exist {
+// 		return "", fmt.Errorf("Owner field is not send in event")
+// 	}
+// 	repository, exist := meta["Repository"]
+// 	if !exist {
+// 		return "", fmt.Errorf("Repository field is not send in event")
+// 	}
+// 	cloneURL, exist := meta["Clone_url"]
+// 	if !exist {
+// 		return "", fmt.Errorf("Clone URL field is not send in event")
+// 	}
+// 	home := fmt.Sprintf("/%s/%s/%s", basePath, owner, repository)
+
+// 	if err := clone(fmt.Sprintf("%s", cloneURL), home); err != nil {
+// 		return "", err
+// 	}
+// 	release := false
+// 	if event.Type() == "release" {
+// 		release = true
+// 	}
+// 	return home, checkout(home, event.ID(), release)
+// }
+
+func downloadReleaseAssets(event cloudevents.Event) (string, error) {
 	meta := event.Extensions()
 	owner, exist := meta["Owner"]
 	if !exist {
@@ -96,20 +132,31 @@ func checkoutTargetRepository(event cloudevents.Event) (string, error) {
 	if !exist {
 		return "", fmt.Errorf("Repository field is not send in event")
 	}
-	cloneURL, exist := meta["Clone_url"]
-	if !exist {
-		return "", fmt.Errorf("Clone URL field is not send in event")
-	}
-	home := fmt.Sprintf("/%s/%s/%s", basePath, owner, repository)
-
-	if err := clone(fmt.Sprintf("%s", cloneURL), home); err != nil {
+	client := github.NewClient(nil)
+	id, err := strconv.Atoi(event.ID())
+	if err != nil {
 		return "", err
 	}
-	release := false
-	if event.Type() == "release" {
-		release = true
+	assets, resp, err := client.Repositories.ListReleaseAssets(context.Background(),
+		fmt.Sprint(owner), fmt.Sprint(repository), int64(id), &github.ListOptions{})
+	if err != nil {
+		return "", err
 	}
-	return home, checkout(home, event.ID(), release)
+	if resp.StatusCode != 200 {
+		return "", fmt.Errorf("unexpected response status: %s", resp.Status)
+	}
+
+	home := fmt.Sprintf("%s/%s/%s", basePath, owner, repository)
+	if err := os.MkdirAll(home, os.FileMode(0755)); err != nil {
+		return "", err
+	}
+
+	for _, asset := range assets {
+		if err := download(asset.GetBrowserDownloadURL(), fmt.Sprintf("%s/%s", home, asset.GetName())); err != nil {
+			return "", err
+		}
+	}
+	return home, nil
 }
 
 func checkoutKustomizationRepository(url, path string) error {
@@ -177,7 +224,7 @@ func push(path string) error {
 		return err
 	}
 
-	if _, err := w.Commit("adding output.yaml", &git.CommitOptions{
+	if _, err := w.Commit("updating output.yaml", &git.CommitOptions{
 		Author: &object.Signature{
 			Name:  "kustomizer",
 			Email: "kustomizer@triggermesh.io",
@@ -193,4 +240,28 @@ func push(path string) error {
 			Password: cfg.Token,
 		},
 	})
+}
+
+func download(rawURL, fileName string) error {
+	file, err := os.Create(fileName)
+	if err != nil {
+		return err
+	}
+	defer file.Close()
+
+	check := stdhttp.Client{
+		CheckRedirect: func(r *stdhttp.Request, via []*stdhttp.Request) error {
+			r.URL.Opaque = r.URL.Path
+			return nil
+		},
+	}
+
+	resp, err := check.Get(rawURL)
+	if err != nil {
+		return err
+	}
+	defer resp.Body.Close()
+
+	_, err = io.Copy(file, resp.Body)
+	return err
 }
