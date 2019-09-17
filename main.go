@@ -10,9 +10,10 @@ import (
 	"github.com/caarlos0/env"
 	cloudevents "github.com/cloudevents/sdk-go"
 	"github.com/otiai10/copy"
-	"gopkg.in/src-d/go-git.v4"
+	"github.com/src-d/go-git"
 	"gopkg.in/src-d/go-git.v4/plumbing"
 	"gopkg.in/src-d/go-git.v4/plumbing/object"
+	"gopkg.in/src-d/go-git.v4/plumbing/transport/http"
 	"knative.dev/eventing-contrib/pkg/kncloudevents"
 	"sigs.k8s.io/kustomize/k8sdeps/kunstruct"
 	"sigs.k8s.io/kustomize/k8sdeps/transformer"
@@ -28,6 +29,7 @@ const (
 
 type config struct {
 	KustomizeRepo string `env:"K_REPO"`
+	Token         string `env:"GIT_TOKEN"`
 }
 
 var cfg config
@@ -80,13 +82,6 @@ func handler(ctx context.Context, event cloudevents.Event) error {
 	if err := opt.RunBuild(os.Stdout, fs.MakeRealFS(), rf, pf); err != nil {
 		return err
 	}
-
-	// dat, err := ioutil.ReadFile(fmt.Sprintf("%s/output.yaml", kustomizationPath))
-	// if err != nil {
-	// return err
-	// }
-	// fmt.Println(string(dat))
-	// return nil
 
 	return push(kustomizationPath)
 }
@@ -182,22 +177,20 @@ func push(path string) error {
 		return err
 	}
 
-	status, err := w.Status()
-	if err != nil {
-		return err
-	}
-
-	fmt.Println(status)
-
 	if _, err := w.Commit("adding output.yaml", &git.CommitOptions{
 		Author: &object.Signature{
-			Name:  "John Doe",
-			Email: "john@doe.org",
+			Name:  "kustomizer",
+			Email: "kustomizer@triggermesh.io",
 			When:  time.Now(),
 		},
 	}); err != nil {
 		return err
 	}
 
-	return r.Push(&git.PushOptions{})
+	return r.Push(&git.PushOptions{
+		Auth: &http.BasicAuth{
+			Username: "kustomizer",
+			Password: cfg.Token,
+		},
+	})
 }
