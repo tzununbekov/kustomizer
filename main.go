@@ -10,7 +10,7 @@ import (
 	"github.com/caarlos0/env"
 	cloudevents "github.com/cloudevents/sdk-go"
 	"github.com/otiai10/copy"
-	"github.com/src-d/go-git"
+	"gopkg.in/src-d/go-git.v4"
 	"gopkg.in/src-d/go-git.v4/plumbing"
 	"gopkg.in/src-d/go-git.v4/plumbing/object"
 	"gopkg.in/src-d/go-git.v4/plumbing/transport/http"

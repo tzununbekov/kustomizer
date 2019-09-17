@@ -9,7 +9,7 @@ require (
 	github.com/google/ko v0.0.0-20190912215950-133ae27c6333 // indirect
 	github.com/kubernetes-sigs/kustomize v2.0.3+incompatible // indirect
 	github.com/otiai10/copy v1.0.2
-	github.com/src-d/go-git v4.7.0+incompatible // indirect
+	github.com/src-d/go-git v4.7.0+incompatible
 	gopkg.in/src-d/go-git.v4 v4.13.1
 	k8s.io/kube-openapi v0.0.0-20190816220812-743ec37842bf // indirect
 	knative.dev/eventing-contrib v0.8.2
